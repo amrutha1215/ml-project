@@ -1,0 +1,155 @@
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import NoSuchElementException
+from webdriver_manager.chrome import ChromeDriverManager
+import time
+import csv
+import os
+import tempfile
+
+def extract_product_details(driver):
+    top_names = driver.find_elements(By.XPATH, "//h2[@class='a-size-mini a-spacing-none a-color-base s-line-clamp-2']/a")
+    tops_prices = driver.find_elements(By.XPATH, "//span[@class='a-price-whole']")
+    company_names = driver.find_elements(By.XPATH, "//span[@class='a-size-base-plus a-color-base']")
+    ratings = driver.find_elements(By.XPATH, "//span[@class='a-icon-alt']")
+
+    product_details = []
+    for name, price, company, rating in zip(top_names, tops_prices, company_names, ratings):
+        product_url = name.get_attribute("href")
+
+        # Open the product page in a new tab
+        driver.execute_script("window.open(arguments[0], '_blank');", product_url)
+        driver.switch_to.window(driver.window_handles[1])
+
+        try:
+
+            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "dp-container")))
+
+            details = {
+                "Material composition": None,
+                "Pattern": None,
+                "Fit type": None,
+                "Sleeve type": None,
+                "Collar style": None,
+                "Length": None,
+                "Country of Origin": None
+            }
+
+
+            detail_xpaths = {
+                "Material composition": ("//*[@id='productFactsDesktopExpander']/div[1]/div[1]/div/div[1]/span/span",
+                                         "//*[@id='productFactsDesktopExpander']/div[1]/div[1]/div/div[2]/span/span"),
+                "Pattern": ("//*[@id='productFactsDesktopExpander']/div[1]/div[2]/div/div[1]/span/span",
+                            "//*[@id='productFactsDesktopExpander']/div[1]/div[2]/div/div[2]/span/span"),
+                "Fit type": ("//*[@id='productFactsDesktopExpander']/div[1]/div[3]/div/div[1]/span/span",
+                             "//*[@id='productFactsDesktopExpander']/div[1]/div[3]/div/div[2]/span/span"),
+                "Sleeve type": ("//*[@id='productFactsDesktopExpander']/div[1]/div[4]/div/div[1]/span/span",
+                                "//*[@id='productFactsDesktopExpander']/div[1]/div[4]/div/div[2]/span/span"),
+                "Collar style": ("//*[@id='productFactsDesktopExpander']/div[1]/div[5]/div/div[1]/span/span",
+                                 "//*[@id='productFactsDesktopExpander']/div[1]/div[5]/div/div[2]/span/span"),
+                "Length": ("//*[@id='productFactsDesktopExpander']/div[1]/div[6]/div/div[1]/span/span",
+                           "//*[@id='productFactsDesktopExpander']/div[1]/div[6]/div/div[2]/span/span"),
+                "Country of Origin": ("//*[@id='productFactsDesktopExpander']/div[1]/div[7]/div/div[1]/span/span",
+                                      "//*[@id='productFactsDesktopExpander']/div[1]/div[7]/div/div[2]/span/span")
+            }
+
+            for detail, (label_xpath, value_xpath) in detail_xpaths.items():
+                try:
+                    label_element = driver.find_element(By.XPATH, label_xpath)
+                    if label_element.text.strip() == detail:
+                        try:
+                            value_element = driver.find_element(By.XPATH, value_xpath)
+                            details[detail] = value_element.text.strip()
+                        except NoSuchElementException:
+                            # If the value is not found, set it to '0'
+                            details[detail] = '0'
+                    else:
+                        # If the label is found but doesn't match the expected detail, set it to '0'
+                        details[detail] = '0'
+                except NoSuchElementException:
+                    # If the label is not found, leave it as None
+                    details[detail] = None
+
+
+        except Exception as e:
+            print(f"Error finding product details: {e}")
+
+        # Close the detail tab and switch back to the main tab
+        driver.close()
+        driver.switch_to.window(driver.window_handles[0])
+
+        try:
+            if rating:
+                rating_float = float(rating.get_attribute("innerHTML").split()[0])
+                rating_int = int(rating_float)
+            else:
+                rating_int = 0
+        except Exception as e:
+            print(f"Error converting rating to float: {e}")
+            rating_int = 0
+
+        product = {
+            "Top name": name.text,
+            "Price": price.text,
+            "Company": company.text,
+            "Rating": rating_int,
+            **details
+        }
+        product_details.append(product)
+    return product_details
+
+driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()))
+
+driver.get("https://www.amazon.in")
+
+search_input = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "twotabsearchtextbox")))
+search_input.send_keys("Tops")
+
+search_button = driver.find_element(By.XPATH, "//input[@type='submit']")
+search_button.click()
+
+WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//div[@class='s-main-slot s-result-list s-search-results sg-row']")))
+
+all_product_details = []
+page_number = 1
+
+while len(all_product_details) < 50:
+    print(f"Scraping page {page_number}")
+    time.sleep(3)
+    try:
+        product_details = extract_product_details(driver)
+        all_product_details.extend(product_details)
+    except Exception as e:
+        print(f"Error extracting product details: {e}")
+
+    if len(all_product_details) >= 50:
+        break
+
+    try:
+        next_page_button = driver.find_element(By.XPATH, "//a[contains(@class, 's-pagination-next')]")
+        next_page_button.click()
+        page_number += 1
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, "//div[@class='s-main-slot s-result-list s-search-results sg-row']")))
+    except Exception as e:
+        print("No more pages available or error in navigating to the next page.")
+        break
+
+output_dir = tempfile.gettempdir()
+
+csv_file = os.path.join(output_dir, "amazon_tops2.csv")
+
+csv_columns = ["Top name", "Price", "Company", "Rating", "Material composition", "Pattern", "Fit type", "Sleeve type",
+               "Collar style", "Length", "Country of Origin"]
+
+with open(csv_file, 'w', newline='', encoding='utf-8') as csvfile:
+    writer = csv.DictWriter(csvfile, fieldnames=csv_columns)
+    writer.writeheader()
+    for product in all_product_details[:50]:
+        writer.writerow(product)
+
+print(f"Data successfully written to {csv_file}")
+
+driver.quit()
